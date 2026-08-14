@@ -1,6 +1,6 @@
-# SmallWorld 
+### SmallWorld 
 
-## Section 1: Debug This
+### Section 1: Debug This
 
 ### Question 1: Celery task silently fails on retry
 
