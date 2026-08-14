@@ -9,6 +9,7 @@
 2. No error reaches sentry because standard Celery retry mechanism raises internal `Retry` exceptions rather than unhandled task exceptions. Once `max_retries` is exceeded without explicit error handling or logging, the exception isn't captured cleanly as an unhandled error state downstream.
 
 **The Fix:**
+```python
 import logging
 from celery import shared_task
 
@@ -33,7 +34,7 @@ def process_video(self, video_id):
             logger.error("Video %s failed after %d retries: %s", video_id, self.max_retries, e, exc_info=True)
             raise
         raise self.retry(exc=e, countdown=30)
-
+```
 
 
 ### Question 2: Race condition in reward approval
@@ -46,7 +47,7 @@ Result: Two transfers initiated for one reward.
 
 **The Fix:**
 Use database row locking (select_for_update()) and transition status to 'processing' before calling the external API to prevent duplicate payouts, while keeping external network calls outside DB transaction blocks.
-
+```python
 from django.db import transaction
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
@@ -79,7 +80,7 @@ def approve_reward(request, reward_id):
         reward.status = 'claimed'
         reward.save(update_fields=['status'])
         return Response({'error': f'Transfer failed: {str(e)}'}, status=500)
-
+```
 
 
 ### Question 3: Migration will fail on a live table
@@ -93,7 +94,7 @@ Even with a default value, applying a unique index blocks reads and writes on th
 **Zero-Downtime Fix:**
 
 Migration 1: Add field as nullable without constraints
-
+```python
 class Migration(migrations.Migration):
     dependencies = [('post', '0059_previous')]
     
@@ -104,9 +105,10 @@ class Migration(migrations.Migration):
             field=models.CharField(max_length=64, null=True, blank=True),
         )
     ]
+```
 
 Migration 2: Backfill existing data in batches
-
+```python
 # Create a new empty migration, then add this function
 def backfill_content_hash(apps, schema_editor):
     Post = apps.get_model('post', 'Post')
@@ -121,9 +123,9 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(backfill_content_hash, migrations.RunPython.noop)
     ]
-
+```
 Migration 3: Build index concurrently and enforce uniqueness
-
+```python
 class Migration(migrations.Migration):
     atomic = False  # Important: non-atomic for CONCURRENT index
     dependencies = [('post', '0061_backfill_content_hash')]
@@ -143,7 +145,7 @@ class Migration(migrations.Migration):
             ),
         ),
     ]
-
+```
 
 
 ## Section 2: Real Decisions
@@ -168,7 +170,7 @@ Architecture: Fan Out Pattern
         └──> [Batch Notification Task N (500 users)]
 
 **Code Design:**
-
+```python
 @shared_task
 def notify_post_published(post_id):
     """Dispatcher task: retrieves follower IDs and dispatches chunked batch tasks."""
@@ -211,18 +213,20 @@ def send_batch_notifications(post_id, follower_ids):
             )
         except Exception as e:
             logger.error("Failed sending notification to user %s: %s", follower_id, e)
-
+```
 
 
 ### Question 5: Database index decision
 i. The Query
+```python
 SupportTicket.objects.filter(
     status='open',
     assigned_operator=request.user
 ).order_by('-created_at')[:20]
-
+```
 ii. Index:
 A composite index covering (assigned_operator_id, status, created_at DESC).
+```python
 class SupportTicket(models.Model):
     status = models.CharField(max_length=20)
     assigned_operator = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -235,6 +239,7 @@ class SupportTicket(models.Model):
                 name='idx_ticket_operator_status_created',
             ),
         ]
+```
 **Why This Index:**
 i. assigned_operator_id and status satisfy exact equality filtering (WHERE assigned_operator_id = X AND status = 'open').
 ii. Including -created_at in the composite index allows PostgreSQL to satisfy ORDER BY created_at DESC directly from the index order without executing an expensive in-memory sort step (Sort).
