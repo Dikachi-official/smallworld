@@ -9,7 +9,6 @@
 2. No error reaches sentry because standard Celery retry mechanism raises internal `Retry` exceptions rather than unhandled task exceptions. Once `max_retries` is exceeded without explicit error handling or logging, the exception isn't captured cleanly as an unhandled error state downstream.
 
 **The Fix:**
-```python
 import logging
 from celery import shared_task
 
